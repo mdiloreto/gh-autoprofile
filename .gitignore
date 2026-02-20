@@ -1,0 +1,26 @@
+# gh-autoprofile — Automatic GitHub profile switching per directory
+
+Pin a GitHub account to a directory. When you `cd` in, direnv automatically
+exports the right `GH_TOKEN` and git identity — no manual switching needed.
+
+## Binary
+/gh-autoprofile
+
+## Dependencies
+/vendor/
+
+## OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
+
+## Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
