@@ -14,9 +14,15 @@ import (
 //go:embed shell/gh-autoprofile.sh
 var shellLibContent []byte
 
+//go:embed shell/gh-autoprofile-hook.sh
+var shellHookContent []byte
+
 const (
 	markerStart = "# gh-autoprofile:start"
 	markerEnd   = "# gh-autoprofile:end"
+
+	hookMarkerStart = "# gh-autoprofile-hook:start"
+	hookMarkerEnd   = "# gh-autoprofile-hook:end"
 )
 
 // IsInstalled checks if direnv is available in PATH.
@@ -58,6 +64,15 @@ func ShellLibPath() (string, error) {
 	return filepath.Join(dir, "gh-autoprofile.sh"), nil
 }
 
+// ShellHookPath returns the path to the installed shell hook script.
+func ShellHookPath() (string, error) {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "hook.sh"), nil
+}
+
 // InstallShellLib writes the embedded shell library to direnv's lib directory.
 func InstallShellLib() error {
 	libDir, err := ShellLibDir()
@@ -72,6 +87,87 @@ func InstallShellLib() error {
 	return os.WriteFile(dest, shellLibContent, 0644)
 }
 
+// InstallShellHook writes the shell hook script to the config directory
+// and injects a source line into the user's shell RC file (~/.zshrc or
+// ~/.bashrc). The hook creates gh()/git() wrapper functions when
+// GH_AUTOPROFILE_USER is set by direnv.
+func InstallShellHook() (hookPath string, err error) {
+	// Write hook script to config dir.
+	hookPath, err = ShellHookPath()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(hookPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("cannot create config directory %s: %w", dir, err)
+	}
+	if err := os.WriteFile(hookPath, shellHookContent, 0644); err != nil {
+		return "", fmt.Errorf("cannot write hook script: %w", err)
+	}
+	return hookPath, nil
+}
+
+// InjectHookSource adds a `source <hookPath>` line into the given shell RC
+// file, wrapped in markers so it can be updated/removed later.
+func InjectHookSource(rcPath, hookPath string) error {
+	block := hookMarkerStart + "\n" +
+		`source "` + hookPath + `"` + "\n" +
+		hookMarkerEnd + "\n"
+
+	existing, err := os.ReadFile(rcPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cannot read %s: %w", rcPath, err)
+	}
+
+	content := string(existing)
+
+	// Already present — replace the existing block.
+	if strings.Contains(content, hookMarkerStart) {
+		startIdx := strings.Index(content, hookMarkerStart)
+		endIdx := strings.Index(content, hookMarkerEnd)
+		if endIdx != -1 {
+			endIdx += len(hookMarkerEnd)
+			if endIdx < len(content) && content[endIdx] == '\n' {
+				endIdx++
+			}
+			content = content[:startIdx] + block + content[endIdx:]
+			return os.WriteFile(rcPath, []byte(content), 0644)
+		}
+	}
+
+	// Append.
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += "\n" + block
+	return os.WriteFile(rcPath, []byte(content), 0644)
+}
+
+// CheckShellHookInstalled checks if the gh-autoprofile hook source line
+// is present in common shell config files.
+func CheckShellHookInstalled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	files := []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".bash_profile"),
+		filepath.Join(home, ".profile"),
+	}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), hookMarkerStart) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsShellLibInstalled checks if the shell library file exists.
 func IsShellLibInstalled() bool {
 	path, err := ShellLibPath()
@@ -82,8 +178,8 @@ func IsShellLibInstalled() bool {
 	return err == nil
 }
 
-// CheckShellHook looks for the direnv hook in common shell config files.
-func CheckShellHook() bool {
+// CheckDirenvHook looks for the direnv hook in common shell config files.
+func CheckDirenvHook() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
@@ -110,29 +206,38 @@ func CheckShellHook() bool {
 // WriteEnvrc creates or updates the .envrc file in the pin's directory.
 // Uses markers to manage only the gh-autoprofile block, preserving any
 // existing user content in the .envrc.
+//
+// In wrapper mode (default) it writes: use_gh_autoprofile <user> ...
+// In export mode it writes: use_gh_autoprofile_export <user> ...
 func WriteEnvrc(pin config.Pin) error {
 	envrcPath := filepath.Join(pin.Dir, ".envrc")
 
-	// Build the use_gh_autoprofile call with all arguments
+	// Choose the direnv function based on mode.
+	fnName := "use_gh_autoprofile"
+	if pin.EffectiveMode() == config.ModeExport {
+		fnName = "use_gh_autoprofile_export"
+	}
+
+	// Build arguments.
 	var args []string
-	args = append(args, quote(pin.User))
+	args = append(args, shellQuote(pin.User))
 	if pin.GitEmail != "" {
-		args = append(args, quote(pin.GitEmail))
+		args = append(args, shellQuote(pin.GitEmail))
 		if pin.GitName != "" {
-			args = append(args, quote(pin.GitName))
+			args = append(args, shellQuote(pin.GitName))
 			if pin.SSHKey != "" {
-				args = append(args, quote(pin.SSHKey))
+				args = append(args, shellQuote(pin.SSHKey))
 			}
 		}
 	}
 
-	// Build the managed block
+	// Build the managed block.
 	var block strings.Builder
 	block.WriteString(markerStart + "\n")
-	block.WriteString("use_gh_autoprofile " + strings.Join(args, " ") + "\n")
+	block.WriteString(fnName + " " + strings.Join(args, " ") + "\n")
 	block.WriteString(markerEnd + "\n")
 
-	// Read existing .envrc (if any)
+	// Read existing .envrc (if any).
 	existing, err := os.ReadFile(envrcPath)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("cannot read .envrc: %w", err)
@@ -142,7 +247,7 @@ func WriteEnvrc(pin config.Pin) error {
 	if len(existing) > 0 {
 		content := string(existing)
 		if strings.Contains(content, markerStart) {
-			// Replace existing block
+			// Replace existing block.
 			startIdx := strings.Index(content, markerStart)
 			endIdx := strings.Index(content, markerEnd)
 			if endIdx != -1 {
@@ -152,7 +257,7 @@ func WriteEnvrc(pin config.Pin) error {
 				}
 				newContent = content[:startIdx] + block.String() + content[endIdx:]
 			} else {
-				// Malformed markers — append fresh block
+				// Malformed markers — append fresh block.
 				newContent = content
 				if !strings.HasSuffix(content, "\n") {
 					newContent += "\n"
@@ -160,7 +265,7 @@ func WriteEnvrc(pin config.Pin) error {
 				newContent += block.String()
 			}
 		} else {
-			// Append block to existing content
+			// Append block to existing content.
 			newContent = content
 			if !strings.HasSuffix(content, "\n") {
 				newContent += "\n"
@@ -222,10 +327,23 @@ func AllowEnvrc(dir string) error {
 	return nil
 }
 
-// quote wraps a string in shell-safe double quotes if it contains spaces.
-func quote(s string) string {
-	if strings.ContainsAny(s, " \t\"'\\$") {
-		return fmt.Sprintf("%q", s)
+// shellQuote wraps a string in single quotes for safe shell interpolation.
+// Single quotes inside the string are escaped as '\''.
+func shellQuote(s string) string {
+	// If the string is simple (alphanumeric, dash, dot, underscore, slash,
+	// at, plus, colon) it doesn't need quoting.
+	safe := true
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '.' || c == '_' || c == '/' || c == '@' || c == '+' || c == ':') {
+			safe = false
+			break
+		}
 	}
-	return s
+	if safe && len(s) > 0 {
+		return s
+	}
+
+	// Escape using single quotes: replace ' with '\''
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

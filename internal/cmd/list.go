@@ -36,8 +36,8 @@ func runList(cmd *cobra.Command, args []string) error {
 	cwd, _ := os.Getwd()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "DIRECTORY\tACCOUNT\tGIT EMAIL\tGIT NAME\tSSH KEY")
-	fmt.Fprintln(w, "---------\t-------\t---------\t--------\t-------")
+	fmt.Fprintln(w, "DIRECTORY\tACCOUNT\tMODE\tGIT EMAIL\tGIT NAME\tSSH KEY")
+	fmt.Fprintln(w, "---------\t-------\t----\t---------\t--------\t-------")
 
 	for _, pin := range registry.Pins {
 		marker := " "
@@ -45,6 +45,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			marker = "*"
 		}
 
+		mode := string(pin.EffectiveMode())
 		email := pin.GitEmail
 		if email == "" {
 			email = "-"
@@ -58,7 +59,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			sshKey = "-"
 		}
 
-		fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\n", marker, pin.Dir, pin.User, email, name, sshKey)
+		fmt.Fprintf(w, "%s %s\t%s\t%s\t%s\t%s\t%s\n", marker, pin.Dir, pin.User, mode, email, name, sshKey)
 	}
 
 	w.Flush()

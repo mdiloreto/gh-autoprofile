@@ -15,8 +15,9 @@ func NewStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show the active profile context for the current directory",
-		Long: `Display the current directory's pinned account, active GH_TOKEN,
-git identity, and any mismatches between expected and actual state.`,
+		Long: `Display the current directory's pinned account, token mode,
+active environment variables, and any mismatches between expected
+and actual state.`,
 		RunE: runStatus,
 	}
 }
@@ -41,6 +42,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Pinned account
 	if pin != nil {
 		fmt.Printf("  Pinned account:   %s\n", pin.User)
+		fmt.Printf("  Token mode:       %s\n", pin.EffectiveMode())
 		if pin.GitEmail != "" {
 			fmt.Printf("  Pinned email:     %s\n", pin.GitEmail)
 		}
@@ -58,13 +60,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Active environment
 	ghToken := os.Getenv("GH_TOKEN")
 	githubToken := os.Getenv("GITHUB_TOKEN")
+	autoprofileUser := os.Getenv("GH_AUTOPROFILE_USER")
 	gitEmail := os.Getenv("GIT_AUTHOR_EMAIL")
 	gitName := os.Getenv("GIT_AUTHOR_NAME")
 	gitSSH := os.Getenv("GIT_SSH_COMMAND")
 
 	fmt.Println("  Environment:")
+	if autoprofileUser != "" {
+		fmt.Printf("    GH_AUTOPROFILE_USER:  %s\n", autoprofileUser)
+	} else {
+		fmt.Println("    GH_AUTOPROFILE_USER:  (not set)")
+	}
 	if ghToken != "" {
-		// Mask the token — show first 4 and last 4 chars
 		masked := maskToken(ghToken)
 		fmt.Printf("    GH_TOKEN:             %s\n", masked)
 	} else {
@@ -112,26 +119,48 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Diagnostics
 	fmt.Println()
-	if pin != nil && ghToken == "" {
-		fmt.Println("  WARNING: Directory is pinned but GH_TOKEN is not set.")
-		fmt.Println("           Is direnv loaded? Try: cd . (to re-trigger direnv)")
-		if !direnvlib.IsInstalled() {
-			fmt.Println("           direnv is not installed!")
-		} else if !direnvlib.IsShellLibInstalled() {
-			fmt.Println("           Shell library not installed. Run: gh autoprofile setup")
-		} else if !direnvlib.CheckShellHook() {
-			fmt.Println("           direnv shell hook not detected in your shell config.")
+	if pin != nil {
+		mode := pin.EffectiveMode()
+		if mode == config.ModeWrapper {
+			// Wrapper mode: expect GH_AUTOPROFILE_USER set, GH_TOKEN NOT set
+			if autoprofileUser == "" {
+				fmt.Println("  WARNING: Directory is pinned (wrapper mode) but GH_AUTOPROFILE_USER is not set.")
+				fmt.Println("           Is direnv loaded? Try: cd . (to re-trigger direnv)")
+				printDirenvDiagnostics()
+			} else if ghToken != "" {
+				fmt.Println("  NOTE: Wrapper mode is active but GH_TOKEN is also set in the environment.")
+				fmt.Println("        The wrapper functions will override it per-command.")
+			} else {
+				fmt.Println("  Profile is active (wrapper mode). Token injected per-command only.")
+			}
+		} else {
+			// Export mode: expect GH_TOKEN set
+			if ghToken == "" {
+				fmt.Println("  WARNING: Directory is pinned (export mode) but GH_TOKEN is not set.")
+				fmt.Println("           Is direnv loaded? Try: cd . (to re-trigger direnv)")
+				printDirenvDiagnostics()
+			} else {
+				fmt.Println("  Profile is active (export mode). GH_TOKEN is in the environment.")
+			}
 		}
-	} else if pin != nil && ghToken != "" {
-		fmt.Println("  Profile is active and GH_TOKEN is set.")
-	} else if pin == nil && ghToken != "" {
-		fmt.Println("  NOTE: GH_TOKEN is set but this directory has no pin.")
-		fmt.Println("        The token may come from another source (parent .envrc, export, etc.)")
+	} else if ghToken != "" || autoprofileUser != "" {
+		fmt.Println("  NOTE: Token/profile vars are set but this directory has no pin.")
+		fmt.Println("        They may come from another source (parent .envrc, export, etc.)")
 	} else {
-		fmt.Println("  No pin and no GH_TOKEN. Using default gh account.")
+		fmt.Println("  No pin and no profile active. Using default gh account.")
 	}
 
 	return nil
+}
+
+func printDirenvDiagnostics() {
+	if !direnvlib.IsInstalled() {
+		fmt.Println("           direnv is not installed!")
+	} else if !direnvlib.IsShellLibInstalled() {
+		fmt.Println("           Shell library not installed. Run: gh autoprofile setup")
+	} else if !direnvlib.CheckDirenvHook() {
+		fmt.Println("           direnv shell hook not detected in your shell config.")
+	}
 }
 
 // maskToken shows the first 4 and last 4 characters of a token.
