@@ -1,7 +1,9 @@
 package direnv
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,7 +11,7 @@ import (
 	"github.com/mdiloreto/gh-autoprofile/internal/config"
 )
 
-func TestWriteEnvrc_NewFile(t *testing.T) {
+func TestWriteEnvrc_WrapperMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	pin := config.Pin{User: "alice", Dir: tmpDir}
 
@@ -23,6 +25,33 @@ func TestWriteEnvrc_NewFile(t *testing.T) {
 	}
 
 	expected := "# gh-autoprofile:start\nuse_gh_autoprofile alice\n# gh-autoprofile:end\n"
+	if string(content) != expected {
+		t.Errorf("unexpected .envrc content:\ngot:  %q\nwant: %q", string(content), expected)
+	}
+
+	fi, err := os.Stat(filepath.Join(tmpDir, ".envrc"))
+	if err != nil {
+		t.Fatalf("cannot stat .envrc: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf(".envrc permissions = %o, want 600", got)
+	}
+}
+
+func TestWriteEnvrc_ExportMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	pin := config.Pin{User: "alice", Dir: tmpDir, Mode: config.ModeExport}
+
+	if err := WriteEnvrc(pin); err != nil {
+		t.Fatalf("WriteEnvrc failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, ".envrc"))
+	if err != nil {
+		t.Fatalf("cannot read .envrc: %v", err)
+	}
+
+	expected := "# gh-autoprofile:start\nuse_gh_autoprofile_export alice\n# gh-autoprofile:end\n"
 	if string(content) != expected {
 		t.Errorf("unexpected .envrc content:\ngot:  %q\nwant: %q", string(content), expected)
 	}
@@ -55,6 +84,41 @@ func TestWriteEnvrc_WithGitIdentity(t *testing.T) {
 	}
 	if !strings.Contains(s, "Bob Test") {
 		t.Error("expected .envrc to contain name")
+	}
+	// Default mode should be wrapper
+	if !strings.Contains(s, "use_gh_autoprofile ") {
+		t.Error("expected .envrc to use use_gh_autoprofile (wrapper mode)")
+	}
+	if strings.Contains(s, "use_gh_autoprofile_export") {
+		t.Error("wrapper mode should not use use_gh_autoprofile_export")
+	}
+}
+
+func TestWriteEnvrc_ExportWithGitIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	pin := config.Pin{
+		User:     "bob",
+		Dir:      tmpDir,
+		Mode:     config.ModeExport,
+		GitEmail: "bob@test.com",
+		GitName:  "Bob Test",
+	}
+
+	if err := WriteEnvrc(pin); err != nil {
+		t.Fatalf("WriteEnvrc failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tmpDir, ".envrc"))
+	if err != nil {
+		t.Fatalf("cannot read .envrc: %v", err)
+	}
+
+	s := string(content)
+	if !strings.Contains(s, "use_gh_autoprofile_export") {
+		t.Error("expected .envrc to use use_gh_autoprofile_export (export mode)")
+	}
+	if !strings.Contains(s, "bob@test.com") {
+		t.Error("expected .envrc to contain email")
 	}
 }
 
@@ -94,14 +158,14 @@ func TestWriteEnvrc_UpdatesExistingBlock(t *testing.T) {
 	tmpDir := t.TempDir()
 	envrcPath := filepath.Join(tmpDir, ".envrc")
 
-	// First pin
+	// First pin (wrapper mode)
 	pin1 := config.Pin{User: "alice", Dir: tmpDir}
 	if err := WriteEnvrc(pin1); err != nil {
 		t.Fatalf("first WriteEnvrc failed: %v", err)
 	}
 
-	// Update to different user
-	pin2 := config.Pin{User: "bob", Dir: tmpDir, GitEmail: "bob@test.com"}
+	// Update to export mode with different user
+	pin2 := config.Pin{User: "bob", Dir: tmpDir, Mode: config.ModeExport, GitEmail: "bob@test.com"}
 	if err := WriteEnvrc(pin2); err != nil {
 		t.Fatalf("second WriteEnvrc failed: %v", err)
 	}
@@ -115,8 +179,8 @@ func TestWriteEnvrc_UpdatesExistingBlock(t *testing.T) {
 	if strings.Contains(s, "alice") {
 		t.Error("old user 'alice' still present after update")
 	}
-	if !strings.Contains(s, "bob") {
-		t.Error("new user 'bob' not found")
+	if !strings.Contains(s, "use_gh_autoprofile_export bob") {
+		t.Error("new export mode with user 'bob' not found")
 	}
 	// Should only have one start marker
 	if strings.Count(s, markerStart) != 1 {
@@ -188,19 +252,22 @@ func TestRemoveEnvrc_NoopWhenNoFile(t *testing.T) {
 }
 
 func TestShellLibContent(t *testing.T) {
-	// Verify the embedded shell library is non-empty and contains the function
+	// Verify the embedded shell library contains both wrapper and export functions
 	if len(shellLibContent) == 0 {
 		t.Fatal("embedded shell library is empty")
 	}
 	s := string(shellLibContent)
-	if !strings.Contains(s, "use_gh_autoprofile") {
-		t.Error("shell library missing use_gh_autoprofile function")
+	if !strings.Contains(s, "use_gh_autoprofile()") {
+		t.Error("shell library missing use_gh_autoprofile function (wrapper mode)")
+	}
+	if !strings.Contains(s, "use_gh_autoprofile_export()") {
+		t.Error("shell library missing use_gh_autoprofile_export function (export mode)")
+	}
+	if !strings.Contains(s, "GH_AUTOPROFILE_USER") {
+		t.Error("shell library missing GH_AUTOPROFILE_USER marker export")
 	}
 	if !strings.Contains(s, "GH_TOKEN") {
-		t.Error("shell library missing GH_TOKEN export")
-	}
-	if !strings.Contains(s, "GITHUB_TOKEN") {
-		t.Error("shell library missing GITHUB_TOKEN export")
+		t.Error("shell library missing GH_TOKEN export (in export mode)")
 	}
 	if !strings.Contains(s, "GIT_AUTHOR_EMAIL") {
 		t.Error("shell library missing GIT_AUTHOR_EMAIL")
@@ -208,4 +275,263 @@ func TestShellLibContent(t *testing.T) {
 	if !strings.Contains(s, "GIT_SSH_COMMAND") {
 		t.Error("shell library missing GIT_SSH_COMMAND")
 	}
+}
+
+func TestShellHookContent(t *testing.T) {
+	// Verify the embedded shell hook is non-empty and contains key elements
+	if len(shellHookContent) == 0 {
+		t.Fatal("embedded shell hook is empty")
+	}
+	s := string(shellHookContent)
+	if !strings.Contains(s, "_gh_autoprofile_hook") {
+		t.Error("shell hook missing _gh_autoprofile_hook function")
+	}
+	if !strings.Contains(s, "GH_AUTOPROFILE_USER") {
+		t.Error("shell hook missing GH_AUTOPROFILE_USER reference")
+	}
+	if !strings.Contains(s, "gh auth token") {
+		t.Error("shell hook missing 'gh auth token' invocation")
+	}
+	if !strings.Contains(s, "precmd") {
+		t.Error("shell hook missing zsh precmd integration")
+	}
+	if !strings.Contains(s, "PROMPT_COMMAND") {
+		t.Error("shell hook missing bash PROMPT_COMMAND integration")
+	}
+	// Verify export mode detection: hook should check for GH_TOKEN to skip wrappers
+	if !strings.Contains(s, `"${GH_TOKEN:-}"`) && !strings.Contains(s, `"${GH_TOKEN:+1}"`) {
+		t.Error("shell hook missing GH_TOKEN check for export mode detection")
+	}
+	// Verify state tracking includes token presence
+	if !strings.Contains(s, "_gh_autoprofile_last_has_token") {
+		t.Error("shell hook missing _gh_autoprofile_last_has_token state tracking")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"alice", "alice"},
+		{"bob-work", "bob-work"},
+		{"alice@test.com", "alice@test.com"},
+		{"/home/user/.ssh/id_ed25519", "/home/user/.ssh/id_ed25519"},
+		{"Bob Smith", "'Bob Smith'"},
+		{"it's a test", "'it'\\''s a test'"},
+		{"has spaces", "'has spaces'"},
+		{"has\ttab", "'has\ttab'"},
+		{"has$dollar", "'has$dollar'"},
+		{"", "''"},
+	}
+
+	for _, tt := range tests {
+		got := shellQuote(tt.input)
+		if got != tt.expected {
+			t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestInjectHookSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	rcPath := filepath.Join(tmpDir, ".zshrc")
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+
+	// First injection — creates the file
+	if err := InjectHookSource(rcPath, hookPath); err != nil {
+		t.Fatalf("InjectHookSource failed: %v", err)
+	}
+
+	content, err := os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("cannot read RC file: %v", err)
+	}
+	s := string(content)
+	if !strings.Contains(s, hookMarkerStart) {
+		t.Error("hook marker start not found")
+	}
+	if !strings.Contains(s, hookPath) {
+		t.Errorf("hook path %q not found in RC file", hookPath)
+	}
+
+	// Second injection — should replace, not duplicate
+	if err := InjectHookSource(rcPath, hookPath); err != nil {
+		t.Fatalf("second InjectHookSource failed: %v", err)
+	}
+
+	content, err = os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("cannot read RC file: %v", err)
+	}
+	s = string(content)
+	if strings.Count(s, hookMarkerStart) != 1 {
+		t.Errorf("expected exactly 1 hook marker, got %d", strings.Count(s, hookMarkerStart))
+	}
+}
+
+func TestInjectHookSource_PreservesExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+	rcPath := filepath.Join(tmpDir, ".zshrc")
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+
+	// Write existing RC content
+	existing := "# My zsh config\nexport EDITOR=vim\n"
+	if err := os.WriteFile(rcPath, []byte(existing), 0644); err != nil {
+		t.Fatalf("cannot write RC file: %v", err)
+	}
+
+	if err := InjectHookSource(rcPath, hookPath); err != nil {
+		t.Fatalf("InjectHookSource failed: %v", err)
+	}
+
+	content, err := os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("cannot read RC file: %v", err)
+	}
+	s := string(content)
+	if !strings.Contains(s, "export EDITOR=vim") {
+		t.Error("existing content was lost")
+	}
+	if !strings.Contains(s, hookMarkerStart) {
+		t.Error("hook marker not added")
+	}
+}
+
+func TestShellHook_WrapperAndExportBehavior(t *testing.T) {
+	tmpDir := t.TempDir()
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+	if err := os.WriteFile(hookPath, shellHookContent, 0700); err != nil {
+		t.Fatalf("cannot write hook file: %v", err)
+	}
+
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0755); err != nil {
+		t.Fatalf("cannot create fake bin dir: %v", err)
+	}
+
+	fakeGh := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1\" == \"auth\" && \"$2\" == \"token\" && \"$3\" == \"--user\" ]]; then\n" +
+		"  echo token-$4\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [[ \"$1\" == \"api\" ]]; then\n" +
+		"  echo GH_TOKEN=${GH_TOKEN:-}\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo gh-called\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(fakeGh), 0755); err != nil {
+		t.Fatalf("cannot write fake gh: %v", err)
+	}
+
+	fakeGit := "#!/usr/bin/env bash\n" +
+		"echo GH_TOKEN=${GH_TOKEN:-}\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(fakeGit), 0755); err != nil {
+		t.Fatalf("cannot write fake git: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		shell  string
+		script string
+	}{
+		{
+			name:  "bash",
+			shell: "bash",
+			script: fmt.Sprintf(`set -e
+export PATH=%q:$PATH
+source %q
+export GH_AUTOPROFILE_USER=alice
+unset GH_TOKEN
+_gh_autoprofile_hook
+echo WRAP_GH=$(type -t gh)
+echo WRAP_GIT=$(type -t git)
+gh api /user
+git status
+export GH_TOKEN=preexisting
+_gh_autoprofile_hook
+echo EXP_GH=$(type -t gh)
+echo EXP_GIT=$(type -t git)
+`, fakeBin, hookPath),
+		},
+		{
+			name:  "zsh",
+			shell: "zsh",
+			script: fmt.Sprintf(`set -e
+export PATH=%q:$PATH
+source %q
+export GH_AUTOPROFILE_USER=alice
+unset GH_TOKEN
+_gh_autoprofile_hook
+echo WRAP_GH=$(whence -w gh)
+echo WRAP_GIT=$(whence -w git)
+gh api /user
+git status
+export GH_TOKEN=preexisting
+_gh_autoprofile_hook
+echo EXP_GH=$(whence -w gh)
+echo EXP_GIT=$(whence -w git)
+`, fakeBin, hookPath),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := exec.LookPath(tc.shell); err != nil {
+				t.Skipf("%s not available: %v", tc.shell, err)
+			}
+
+			cmd := exec.Command(tc.shell, "-c", tc.script)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s script failed: %v\noutput:\n%s", tc.shell, err, string(out))
+			}
+
+			s := string(out)
+			if !strings.Contains(s, "GH_TOKEN=token-alice") {
+				t.Fatalf("expected wrapper mode token injection, got:\n%s", s)
+			}
+			if strings.Contains(s, "EXP_GH=function") || strings.Contains(s, "EXP_GIT=function") {
+				t.Fatalf("expected export mode to remove wrappers, got:\n%s", s)
+			}
+		})
+	}
+}
+
+func TestShellHook_RegistersWithPromptCycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+	if err := os.WriteFile(hookPath, shellHookContent, 0700); err != nil {
+		t.Fatalf("cannot write hook file: %v", err)
+	}
+
+	t.Run("bash", func(t *testing.T) {
+		if _, err := exec.LookPath("bash"); err != nil {
+			t.Skipf("bash not available: %v", err)
+		}
+
+		cmd := exec.Command("bash", "-c", fmt.Sprintf(`source %q; echo PROMPT_COMMAND=${PROMPT_COMMAND}`, hookPath))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("bash script failed: %v\noutput:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "_gh_autoprofile_hook") {
+			t.Fatalf("expected PROMPT_COMMAND to include hook, got:\n%s", string(out))
+		}
+	})
+
+	t.Run("zsh", func(t *testing.T) {
+		if _, err := exec.LookPath("zsh"); err != nil {
+			t.Skipf("zsh not available: %v", err)
+		}
+
+		cmd := exec.Command("zsh", "-c", fmt.Sprintf(`source %q; autoload -Uz add-zsh-hook; if [[ "${precmd_functions[(r)_gh_autoprofile_hook]}" == "_gh_autoprofile_hook" ]]; then echo OK; fi`, hookPath))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("zsh script failed: %v\noutput:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "OK") {
+			t.Fatalf("expected precmd hook registration, got:\n%s", string(out))
+		}
+	})
 }

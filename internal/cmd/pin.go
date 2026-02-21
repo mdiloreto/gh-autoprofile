@@ -14,20 +14,27 @@ import (
 // NewPinCmd creates the `pin` subcommand.
 func NewPinCmd() *cobra.Command {
 	var dir, gitEmail, gitName, sshKey string
+	var exportToken bool
 
 	cmd := &cobra.Command{
 		Use:   "pin <username>",
 		Short: "Pin a GitHub account to a directory",
 		Long: `Pin a GitHub account to a directory. When you cd into the directory,
-direnv will automatically export the correct GH_TOKEN and git identity.
+the correct credentials and git identity are automatically activated.
+
+By default, tokens are injected per-command via shell wrapper functions
+(wrapper mode). The token never sits in your shell environment.
+
+Use --export-token for directories where third-party tools (Terraform,
+act, etc.) need GH_TOKEN / GITHUB_TOKEN as environment variables.
 
 Examples:
   gh autoprofile pin alice
   gh autoprofile pin bob-work --dir ~/work --git-email bob@company.com
-  gh autoprofile pin alice-freelance --dir ~/freelance --git-name "Alice Freelance" --git-email alice@freelance.com`,
+  gh autoprofile pin alice-freelance --dir ~/freelance --export-token`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPin(args[0], dir, gitEmail, gitName, sshKey)
+			return runPin(args[0], dir, gitEmail, gitName, sshKey, exportToken)
 		},
 	}
 
@@ -35,11 +42,12 @@ Examples:
 	cmd.Flags().StringVar(&gitEmail, "git-email", "", "Git author/committer email for this directory")
 	cmd.Flags().StringVar(&gitName, "git-name", "", "Git author/committer name for this directory")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "Path to SSH private key for this directory")
+	cmd.Flags().BoolVar(&exportToken, "export-token", false, "Export GH_TOKEN/GITHUB_TOKEN into the shell environment (less secure)")
 
 	return cmd
 }
 
-func runPin(user, dir, gitEmail, gitName, sshKey string) error {
+func runPin(user, dir, gitEmail, gitName, sshKey string, exportToken bool) error {
 	// Resolve absolute path
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -79,10 +87,17 @@ func runPin(user, dir, gitEmail, gitName, sshKey string) error {
 		return fmt.Errorf("direnv shell library not installed. Run first: gh autoprofile setup")
 	}
 
+	// Determine mode
+	mode := config.ModeWrapper
+	if exportToken {
+		mode = config.ModeExport
+	}
+
 	// Create pin
 	pin := config.Pin{
 		User:     user,
 		Dir:      absDir,
+		Mode:     mode,
 		GitEmail: gitEmail,
 		GitName:  gitName,
 		SSHKey:   sshKey,
@@ -112,7 +127,12 @@ func runPin(user, dir, gitEmail, gitName, sshKey string) error {
 	}
 
 	// Summary
+	modeLabel := "wrapper"
+	if mode == config.ModeExport {
+		modeLabel = "export"
+	}
 	fmt.Printf("\nPinned '%s' -> %s\n", user, absDir)
+	fmt.Printf("  Mode:       %s\n", modeLabel)
 	if gitEmail != "" {
 		fmt.Printf("  Git email:  %s\n", gitEmail)
 	}
@@ -123,6 +143,13 @@ func runPin(user, dir, gitEmail, gitName, sshKey string) error {
 		fmt.Printf("  SSH key:    %s\n", sshKey)
 	}
 	fmt.Printf("  .envrc:     %s/.envrc\n", absDir)
+
+	if mode == config.ModeWrapper {
+		fmt.Println("\n  Token is injected per-command (never in shell environment).")
+	} else {
+		fmt.Println("\n  WARNING: Token is exported into shell environment.")
+		fmt.Println("  All child processes can read GH_TOKEN/GITHUB_TOKEN.")
+	}
 	fmt.Println("\ncd into the directory to activate the profile.")
 
 	return nil

@@ -43,3 +43,16 @@ release:
     name: gh-autoprofile
   draft: false
   prerelease: auto
+  footer: |
+    ## Upgrade notes
+
+    This release includes security hardening for wrapper-mode token injection.
+
+    Run these commands after upgrading:
+
+    ```bash
+    gh extension upgrade mdiloreto/gh-autoprofile
+    gh autoprofile setup --migrate
+    ```
+
+    Then restart your shell (or source your shell rc file).

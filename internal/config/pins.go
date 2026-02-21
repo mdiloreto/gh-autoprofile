@@ -8,13 +8,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PinMode controls how tokens are injected into the shell.
+type PinMode string
+
+const (
+	// ModeWrapper (default) — direnv exports only the GH_AUTOPROFILE_USER
+	// marker; a shell hook creates gh()/git() wrapper functions that inject
+	// the token per-invocation (~30 ms). The token never sits in the
+	// shell environment.
+	ModeWrapper PinMode = "wrapper"
+
+	// ModeExport — direnv exports GH_TOKEN and GITHUB_TOKEN directly into
+	// the shell environment (legacy behaviour). Use for directories where
+	// third-party tools (Terraform, act, etc.) need the env var.
+	ModeExport PinMode = "export"
+)
+
 // Pin represents a directory-to-account mapping.
 type Pin struct {
-	User     string `yaml:"user"`
-	Dir      string `yaml:"dir"`
-	GitEmail string `yaml:"git_email,omitempty"`
-	GitName  string `yaml:"git_name,omitempty"`
-	SSHKey   string `yaml:"ssh_key,omitempty"`
+	User     string  `yaml:"user"`
+	Dir      string  `yaml:"dir"`
+	Mode     PinMode `yaml:"mode,omitempty"`
+	GitEmail string  `yaml:"git_email,omitempty"`
+	GitName  string  `yaml:"git_name,omitempty"`
+	SSHKey   string  `yaml:"ssh_key,omitempty"`
+}
+
+// EffectiveMode returns the pin's mode, defaulting to ModeWrapper.
+func (p *Pin) EffectiveMode() PinMode {
+	if p.Mode == "" {
+		return ModeWrapper
+	}
+	return p.Mode
 }
 
 // PinRegistry holds all directory pins.
@@ -76,7 +101,7 @@ func SavePins(registry *PinRegistry) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("cannot create config directory %s: %w", dir, err)
 	}
 
@@ -85,7 +110,7 @@ func SavePins(registry *PinRegistry) error {
 		return fmt.Errorf("cannot marshal pins: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // FindPin returns the pin for a given directory, or nil if not found.
