@@ -1,7 +1,9 @@
 package direnv
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -394,4 +396,142 @@ func TestInjectHookSource_PreservesExisting(t *testing.T) {
 	if !strings.Contains(s, hookMarkerStart) {
 		t.Error("hook marker not added")
 	}
+}
+
+func TestShellHook_WrapperAndExportBehavior(t *testing.T) {
+	tmpDir := t.TempDir()
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+	if err := os.WriteFile(hookPath, shellHookContent, 0700); err != nil {
+		t.Fatalf("cannot write hook file: %v", err)
+	}
+
+	fakeBin := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(fakeBin, 0755); err != nil {
+		t.Fatalf("cannot create fake bin dir: %v", err)
+	}
+
+	fakeGh := "#!/usr/bin/env bash\n" +
+		"if [[ \"$1\" == \"auth\" && \"$2\" == \"token\" && \"$3\" == \"--user\" ]]; then\n" +
+		"  echo token-$4\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [[ \"$1\" == \"api\" ]]; then\n" +
+		"  echo GH_TOKEN=${GH_TOKEN:-}\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"echo gh-called\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "gh"), []byte(fakeGh), 0755); err != nil {
+		t.Fatalf("cannot write fake gh: %v", err)
+	}
+
+	fakeGit := "#!/usr/bin/env bash\n" +
+		"echo GH_TOKEN=${GH_TOKEN:-}\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(fakeGit), 0755); err != nil {
+		t.Fatalf("cannot write fake git: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		shell  string
+		script string
+	}{
+		{
+			name:  "bash",
+			shell: "bash",
+			script: fmt.Sprintf(`set -e
+export PATH=%q:$PATH
+source %q
+export GH_AUTOPROFILE_USER=alice
+unset GH_TOKEN
+_gh_autoprofile_hook
+echo WRAP_GH=$(type -t gh)
+echo WRAP_GIT=$(type -t git)
+gh api /user
+git status
+export GH_TOKEN=preexisting
+_gh_autoprofile_hook
+echo EXP_GH=$(type -t gh)
+echo EXP_GIT=$(type -t git)
+`, fakeBin, hookPath),
+		},
+		{
+			name:  "zsh",
+			shell: "zsh",
+			script: fmt.Sprintf(`set -e
+export PATH=%q:$PATH
+source %q
+export GH_AUTOPROFILE_USER=alice
+unset GH_TOKEN
+_gh_autoprofile_hook
+echo WRAP_GH=$(whence -w gh)
+echo WRAP_GIT=$(whence -w git)
+gh api /user
+git status
+export GH_TOKEN=preexisting
+_gh_autoprofile_hook
+echo EXP_GH=$(whence -w gh)
+echo EXP_GIT=$(whence -w git)
+`, fakeBin, hookPath),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := exec.LookPath(tc.shell); err != nil {
+				t.Skipf("%s not available: %v", tc.shell, err)
+			}
+
+			cmd := exec.Command(tc.shell, "-c", tc.script)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s script failed: %v\noutput:\n%s", tc.shell, err, string(out))
+			}
+
+			s := string(out)
+			if !strings.Contains(s, "GH_TOKEN=token-alice") {
+				t.Fatalf("expected wrapper mode token injection, got:\n%s", s)
+			}
+			if strings.Contains(s, "EXP_GH=function") || strings.Contains(s, "EXP_GIT=function") {
+				t.Fatalf("expected export mode to remove wrappers, got:\n%s", s)
+			}
+		})
+	}
+}
+
+func TestShellHook_RegistersWithPromptCycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	hookPath := filepath.Join(tmpDir, "hook.sh")
+	if err := os.WriteFile(hookPath, shellHookContent, 0700); err != nil {
+		t.Fatalf("cannot write hook file: %v", err)
+	}
+
+	t.Run("bash", func(t *testing.T) {
+		if _, err := exec.LookPath("bash"); err != nil {
+			t.Skipf("bash not available: %v", err)
+		}
+
+		cmd := exec.Command("bash", "-c", fmt.Sprintf(`source %q; echo PROMPT_COMMAND=${PROMPT_COMMAND}`, hookPath))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("bash script failed: %v\noutput:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "_gh_autoprofile_hook") {
+			t.Fatalf("expected PROMPT_COMMAND to include hook, got:\n%s", string(out))
+		}
+	})
+
+	t.Run("zsh", func(t *testing.T) {
+		if _, err := exec.LookPath("zsh"); err != nil {
+			t.Skipf("zsh not available: %v", err)
+		}
+
+		cmd := exec.Command("zsh", "-c", fmt.Sprintf(`source %q; autoload -Uz add-zsh-hook; if [[ "${precmd_functions[(r)_gh_autoprofile_hook]}" == "_gh_autoprofile_hook" ]]; then echo OK; fi`, hookPath))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("zsh script failed: %v\noutput:\n%s", err, string(out))
+		}
+		if !strings.Contains(string(out), "OK") {
+			t.Fatalf("expected precmd hook registration, got:\n%s", string(out))
+		}
+	})
 }
