@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mdiloreto/gh-autoprofile/internal/config"
 	direnvlib "github.com/mdiloreto/gh-autoprofile/internal/direnv"
 	"github.com/mdiloreto/gh-autoprofile/internal/ghauth"
 	"github.com/spf13/cobra"
@@ -13,7 +14,7 @@ import (
 
 // NewSetupCmd creates the `setup` subcommand.
 func NewSetupCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Install direnv shell library, shell hook, and validate prerequisites",
 		Long: `Checks that gh CLI (>= 2.40.0) and direnv are installed, then installs:
@@ -22,12 +23,22 @@ func NewSetupCmd() *cobra.Command {
   2. The shell hook that creates per-command wrapper functions for secure
      token injection (wrapper mode)
 
-Run this once after installing gh-autoprofile.`,
+Run this once after installing gh-autoprofile.
+
+Use --migrate after upgrading to refresh generated files,
+repair permissions, and update existing pins to the latest defaults.`,
 		RunE: runSetup,
 	}
+	cmd.Flags().Bool("migrate", false, "Migrate existing pins and rewrite managed .envrc files")
+	return cmd
 }
 
 func runSetup(cmd *cobra.Command, args []string) error {
+	migrate, err := cmd.Flags().GetBool("migrate")
+	if err != nil {
+		return err
+	}
+
 	fmt.Println("gh-autoprofile setup")
 	fmt.Println("====================")
 	fmt.Println()
@@ -148,6 +159,23 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if migrate {
+		fmt.Print("  Running migration.......... ")
+		report, err := runMigration()
+		if err != nil {
+			fmt.Println("FAILED")
+			fmt.Printf("    %v\n", err)
+			allGood = false
+		} else {
+			fmt.Println("OK")
+			fmt.Printf("    Pins updated: %d, .envrc rewritten: %d, direnv allow: %d\n", report.PinsUpdated, report.EnvrcRewritten, report.Allowed)
+			if report.Warnings > 0 {
+				fmt.Printf("    Warnings: %d (directories missing or not writable)\n", report.Warnings)
+				allGood = false
+			}
+		}
+	}
+
 	// Summary
 	fmt.Println()
 	if allGood {
@@ -158,6 +186,9 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		fmt.Println("    wrapper (default)  — token injected per-command, never in env")
 		fmt.Println("    export             — GH_TOKEN exported (use --export-token flag)")
 		fmt.Println()
+		if migrate {
+			fmt.Println("  Migration complete.")
+		}
 		fmt.Println("  Restart your shell or run: source " + rcPath)
 	} else {
 		fmt.Println("  Setup complete with warnings (see above).")
@@ -166,6 +197,67 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+type migrationReport struct {
+	PinsUpdated    int
+	EnvrcRewritten int
+	Allowed        int
+	Warnings       int
+}
+
+func runMigration() (migrationReport, error) {
+	var report migrationReport
+
+	registry, err := config.LoadPins()
+	if err != nil {
+		return report, fmt.Errorf("cannot load pin registry: %w", err)
+	}
+
+	configDir, err := config.ConfigDir()
+	if err == nil {
+		_ = os.Chmod(configDir, 0700)
+	}
+	if pinsPath, err := config.PinsFilePath(); err == nil {
+		if _, statErr := os.Stat(pinsPath); statErr == nil {
+			_ = os.Chmod(pinsPath, 0600)
+		}
+	}
+
+	updatedMode := 0
+	for i := range registry.Pins {
+		if registry.Pins[i].Mode == "" {
+			registry.Pins[i].Mode = config.ModeWrapper
+			updatedMode++
+		}
+	}
+	if updatedMode > 0 {
+		if err := config.SavePins(registry); err != nil {
+			return report, fmt.Errorf("cannot save migrated pins: %w", err)
+		}
+	}
+	report.PinsUpdated = updatedMode
+
+	for _, pin := range registry.Pins {
+		if _, err := os.Stat(pin.Dir); err != nil {
+			report.Warnings++
+			continue
+		}
+
+		if err := direnvlib.WriteEnvrc(pin); err != nil {
+			report.Warnings++
+			continue
+		}
+		report.EnvrcRewritten++
+
+		if err := direnvlib.AllowEnvrc(pin.Dir); err != nil {
+			report.Warnings++
+			continue
+		}
+		report.Allowed++
+	}
+
+	return report, nil
 }
 
 // detectShellRC finds the user's active shell RC file.

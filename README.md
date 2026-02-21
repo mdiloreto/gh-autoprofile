@@ -74,6 +74,23 @@ This validates prerequisites, installs the direnv shell library, installs the sh
 
 **Restart your shell** (or `source ~/.zshrc`) after setup.
 
+### Upgrade (v0.2+)
+
+After upgrading, run migration once to apply security defaults to existing pins:
+
+```bash
+gh extension upgrade mdiloreto/gh-autoprofile
+gh autoprofile setup --migrate
+# restart shell (or source your rc file)
+```
+
+Migration does this automatically:
+
+- refreshes installed shell library and wrapper hook
+- rewrites managed `.envrc` blocks with current templates and `0600` permissions
+- backfills missing pin mode to `wrapper`
+- runs `direnv allow` for updated pinned directories
+
 ## Usage
 
 ### Pin an account to a directory
@@ -137,6 +154,14 @@ Directory: /home/user/work
   Active gh user:   alice (github.com)
 
   Profile is active (wrapper mode). Token injected per-command only.
+```
+
+### Validate installation health
+
+```bash
+gh autoprofile doctor
+# or auto-fix:
+gh autoprofile doctor --fix
 ```
 
 ### Remove a pin
