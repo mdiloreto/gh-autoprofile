@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/mdiloreto/gh-autoprofile/internal/config"
 	direnvlib "github.com/mdiloreto/gh-autoprofile/internal/direnv"
@@ -62,21 +61,14 @@ func warnUpgradeDrift(cmd *cobra.Command) {
 
 	needsSetup := !direnvlib.IsShellLibInstalled() || !direnvlib.CheckShellHookInstalled()
 	needsModeMigration := false
-	needsEnvrcPerms := false
 
 	for _, pin := range registry.Pins {
 		if pin.Mode == "" {
 			needsModeMigration = true
 		}
-		envrcPath := filepath.Join(pin.Dir, ".envrc")
-		if fi, err := os.Stat(envrcPath); err == nil {
-			if fi.Mode().Perm() != 0600 {
-				needsEnvrcPerms = true
-			}
-		}
 	}
 
-	if !(needsSetup || needsModeMigration || needsEnvrcPerms) {
+	if !(needsSetup || needsModeMigration) {
 		return
 	}
 

@@ -276,7 +276,13 @@ func WriteEnvrc(pin config.Pin) error {
 		newContent = block.String()
 	}
 
-	return os.WriteFile(envrcPath, []byte(newContent), 0600)
+	if err := os.WriteFile(envrcPath, []byte(newContent), 0600); err != nil {
+		return err
+	}
+	if err := os.Chmod(envrcPath, 0600); err != nil {
+		return fmt.Errorf("cannot set .envrc permissions: %w", err)
+	}
+	return nil
 }
 
 // RemoveEnvrc removes the gh-autoprofile block from .envrc.
@@ -312,7 +318,13 @@ func RemoveEnvrc(dir string) error {
 		return os.Remove(envrcPath)
 	}
 
-	return os.WriteFile(envrcPath, []byte(newContent+"\n"), 0600)
+	if err := os.WriteFile(envrcPath, []byte(newContent+"\n"), 0600); err != nil {
+		return err
+	}
+	if err := os.Chmod(envrcPath, 0600); err != nil {
+		return fmt.Errorf("cannot set .envrc permissions: %w", err)
+	}
+	return nil
 }
 
 // AllowEnvrc runs `direnv allow` on the .envrc file.
@@ -328,7 +340,7 @@ func AllowEnvrc(dir string) error {
 }
 
 // shellQuote wraps a string in single quotes for safe shell interpolation.
-// Single quotes inside the string are escaped as '\''.
+// Single quotes inside the string are escaped as '\”.
 func shellQuote(s string) string {
 	// If the string is simple (alphanumeric, dash, dot, underscore, slash,
 	// at, plus, colon) it doesn't need quoting.

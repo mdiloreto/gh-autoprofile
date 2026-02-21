@@ -38,6 +38,31 @@ func TestWriteEnvrc_WrapperMode(t *testing.T) {
 	}
 }
 
+func TestWriteEnvrc_ExistingFilePermissionsHardened(t *testing.T) {
+	tmpDir := t.TempDir()
+	envrcPath := filepath.Join(tmpDir, ".envrc")
+
+	if err := os.WriteFile(envrcPath, []byte("export LEGACY=1\n"), 0644); err != nil {
+		t.Fatalf("cannot write existing .envrc: %v", err)
+	}
+	if err := os.Chmod(envrcPath, 0755); err != nil {
+		t.Fatalf("cannot set permissive mode on .envrc: %v", err)
+	}
+
+	pin := config.Pin{User: "alice", Dir: tmpDir}
+	if err := WriteEnvrc(pin); err != nil {
+		t.Fatalf("WriteEnvrc failed: %v", err)
+	}
+
+	fi, err := os.Stat(envrcPath)
+	if err != nil {
+		t.Fatalf("cannot stat .envrc: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf(".envrc permissions = %o, want 600", got)
+	}
+}
+
 func TestWriteEnvrc_ExportMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	pin := config.Pin{User: "alice", Dir: tmpDir, Mode: config.ModeExport}
