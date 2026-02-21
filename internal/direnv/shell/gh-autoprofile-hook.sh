@@ -53,6 +53,7 @@ _gh_autoprofile_hook() {
       if [[ -n "$_token" ]]; then
         GH_TOKEN="$_token" command git "$@"
       else
+        echo "gh-autoprofile: warning: could not resolve token for '$GH_AUTOPROFILE_USER'" >&2
         command git "$@"
       fi
     }

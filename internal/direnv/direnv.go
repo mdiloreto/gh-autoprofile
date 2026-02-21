@@ -276,7 +276,7 @@ func WriteEnvrc(pin config.Pin) error {
 		newContent = block.String()
 	}
 
-	return os.WriteFile(envrcPath, []byte(newContent), 0644)
+	return os.WriteFile(envrcPath, []byte(newContent), 0600)
 }
 
 // RemoveEnvrc removes the gh-autoprofile block from .envrc.
@@ -312,7 +312,7 @@ func RemoveEnvrc(dir string) error {
 		return os.Remove(envrcPath)
 	}
 
-	return os.WriteFile(envrcPath, []byte(newContent+"\n"), 0644)
+	return os.WriteFile(envrcPath, []byte(newContent+"\n"), 0600)
 }
 
 // AllowEnvrc runs `direnv allow` on the .envrc file.

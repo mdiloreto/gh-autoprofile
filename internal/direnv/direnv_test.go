@@ -26,6 +26,14 @@ func TestWriteEnvrc_WrapperMode(t *testing.T) {
 	if string(content) != expected {
 		t.Errorf("unexpected .envrc content:\ngot:  %q\nwant: %q", string(content), expected)
 	}
+
+	fi, err := os.Stat(filepath.Join(tmpDir, ".envrc"))
+	if err != nil {
+		t.Fatalf("cannot stat .envrc: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0600 {
+		t.Errorf(".envrc permissions = %o, want 600", got)
+	}
 }
 
 func TestWriteEnvrc_ExportMode(t *testing.T) {
